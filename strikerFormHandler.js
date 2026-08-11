@@ -145,7 +145,6 @@ const buildGhlBody = ({ ghl, form, hasPhoneNumber, phoneNumberIsExternal, iti, u
   body.formId = ghl.formId;
   body.location_id = ghl.location_id;
   body.eventData = {
-    source: urlParams.get("utm_source") || "",
     referrer: document.referrer,
     keyword: urlParams.get("utm_term") || "",
     adSource: getAdSource(urlParams),
