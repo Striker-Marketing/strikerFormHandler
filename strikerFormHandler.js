@@ -35,6 +35,40 @@ const GHL_STANDARD_FIELDS = ["full_name", "first_name", "last_name", "email", "a
 const GHL_DEFAULT_TERMS = "I agree to terms & conditions provided by the company. By providing my phone number, I agree to receive text messages from the business.";
 const GHL_ALLOWED_FILE_EXTS = ["doc", "docx", "txt", "pdf", "jpg", "jpeg", "png"];
 
+const AD_SOURCE_MAP = [
+  [["gclid", "gad_source", "gad_campaignid"], "google"],
+  [["fbclid"], "facebook"],
+  [["tbclid"], "taboola"],
+  [["msclkid"], "bing"],
+  [["ttclid"], "tiktok"],
+];
+
+const getCookie = (name) => {
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/([.$?*|{}()[\]\\/+^])/g, "\\$1")}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : "";
+};
+
+const getGaClientId = () => {
+  const ga = getCookie("_ga");
+  if (!ga) return "";
+  const parts = ga.split(".");
+  return parts.length >= 4 ? `${parts[2]}.${parts[3]}` : "";
+};
+
+const getFbc = (urlParams) => {
+  const cookie = getCookie("_fbc");
+  if (cookie) return cookie;
+  const fbclid = urlParams.get("fbclid");
+  return fbclid ? `fb.1.${Date.now()}.${fbclid}` : "";
+};
+
+const getAdSource = (urlParams) => {
+  for (const [keys, name] of AD_SOURCE_MAP) {
+    if (keys.some((k) => urlParams.get(k))) return name;
+  }
+  return "";
+};
+
 const injectGhlCaptcha = (captchaToken) => {
   const style = document.createElement("style");
   style.textContent = `.grecaptcha-badge{width:0 !important;height: 0!important}`;
@@ -111,9 +145,22 @@ const buildGhlBody = ({ ghl, form, hasPhoneNumber, phoneNumberIsExternal, iti, u
   body.formId = ghl.formId;
   body.location_id = ghl.location_id;
   body.eventData = {
+    source: urlParams.get("utm_source") || "",
+    referrer: document.referrer,
+    keyword: urlParams.get("utm_term") || "",
+    adSource: getAdSource(urlParams),
     url_params: Object.fromEntries(urlParams.entries()),
-    campaign: urlParams.get("utm_campaign") || urlParams.get("gad_campaignid"),
     page: { url: window.location.href, title: document.title },
+    timestamp: Date.now(),
+    campaign: urlParams.get("utm_campaign") || urlParams.get("gad_campaignid"),
+    fbp: getCookie("_fbp"),
+    fbc: getFbc(urlParams),
+    domain: window.location.hostname,
+    documentURL: window.location.href,
+    gaClientId: getGaClientId(),
+    fbEventId: crypto.randomUUID(),
+    medium: "form",
+    mediumId: ghl.formId,
   };
   return body;
 };
