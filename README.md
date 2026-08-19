@@ -4,6 +4,7 @@ A single-file, vanilla JS form handler for marketing sites. Wires a plain HTML `
 
 - GoHighLevel (GHL) form/survey submission with reCAPTCHA Enterprise
 - International phone input via [intl-tel-input](https://github.com/jackocnr/intl-tel-input) (lazy-loaded from CDN)
+- Google Places address autocomplete on the address field, filling one input or spreading across city / state / zip
 - UTM / query-param capture as hidden fields and in `eventData`
 - Google Tag Manager `dataLayer` events (`form-submitted`, `form_submitted`)
 - File uploads to GHL custom fields
@@ -91,6 +92,13 @@ strikerFormHandler({
     hasPath,               // string  — if set, submits window.location.pathname under this GHL field id
     hasTaboola,            // string  — if set, submits ?tbclid under this GHL field id
   },
+  address_autofill: {      // omit entirely to skip address autocomplete
+    key,                   // string   — Google Maps JS API key (required to enable)
+    single_field,          // bool     — true: full address into [name="address"] only
+                           //            false: spread across city / state / postal_code / country
+    countries,             // string[] — restrict suggestions; default ["us"]
+    types,                 // string[] — Places primary types; default street_address/subpremise/premise
+  },
   submitFunction,          // ({ ghlResponse }) => void — called after successful submit
 });
 ```
@@ -145,6 +153,108 @@ Two modes:
 - Default (`phoneNumberIsExternal` unset): the handler loads intl-tel-input from CDN, mounts it on `[name="phone_number"]`, detects the initial country via `ipapi.co`, validates via `iti.isValidNumber()`, and submits the E.164 number. Invalid numbers show `alert("Field invalid. Please check for typos.")` and block submit.
 - `phoneNumberIsExternal: true` — you own the phone input; the raw `.value` is submitted verbatim and no validation happens here. Use this when a page-level component already renders its own phone widget.
 - `phoneNumberIsRequired: false` — empty phone is allowed; a non-empty value must still be valid.
+
+## Address autofill
+
+Turns the form's existing `[name="address"]` input into an autocompleting field with a suggestions dropdown, powered by the Google Places API.
+
+The input itself is **not replaced** — it keeps your classes, placeholder, `required`, and `name`, exactly like the phone field. The dropdown is rendered separately and positioned under it.
+
+### Google Cloud setup
+
+1. Enable **Maps JavaScript API** and **[Places API (New)](https://console.cloud.google.com/apis/library/places.googleapis.com)** on your project. "Places API (New)" (`places.googleapis.com`) is a *different service* from the legacy "Places API" — a key with only the legacy one returns `403 ... AutocompletePlaces are blocked`.
+2. Create an API key at [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials/key/).
+3. Restrict it — the key is public in your page source:
+   - **Application restrictions** → HTTP referrers → your domains.
+   - **API restrictions** → *Maps JavaScript API* + *Places API (New)*.
+4. Billing must be active on the project.
+
+### Usage
+
+```js
+strikerFormHandler({
+  formId: "quote-form",
+  address_autofill: {
+    key: "YOUR_GOOGLE_MAPS_API_KEY",
+    single_field: false,
+  },
+  ghl: {
+    formId:       "GHL_FORM_ID",
+    location_id:  "GHL_LOCATION_ID",
+    captchaToken: "RECAPTCHA_ENTERPRISE_SITE_KEY",
+    fields: ["first_name", "email", "address", "city", "state", "postal_code"],
+  },
+});
+```
+
+### The two modes
+
+**`single_field: true`** — only `[name="address"]` is touched, and it receives the full formatted address:
+
+```html
+<input name="address" placeholder="Your address" />
+<!-- → "1600 Amphitheatre Pkwy, Mountain View, CA 94043, USA" -->
+```
+
+**`single_field: false`** — the address is broken apart across the GHL standard field names:
+
+```html
+<input name="address" />      <!-- → "1600 Amphitheatre Parkway"  (street number + route + unit) -->
+<input name="city" />         <!-- → "Mountain View" -->
+<input name="state" />        <!-- → "California"    (full name) -->
+<input name="postal_code" />  <!-- → "94043-1351"    (zip + suffix) -->
+<input name="country" />      <!-- → "US"            (ISO code)     -->
+```
+
+Any of these that don't exist on the form are skipped silently — a form with just `address` and `postal_code` works with no extra config. Because these are the same names GHL submits, they need no mapping: just list them in `ghl.fields`.
+
+`state` works with a `<select>` too. The handler matches an option by `value` first, then by visible text, so `"California"` correctly selects either markup:
+
+```html
+<select name="state">
+  <option value="CA">California</option>  <!-- matched by text  -->
+  <option value="California">California</option>  <!-- matched by value -->
+</select>
+```
+
+### Tuning suggestions
+
+```js
+address_autofill: {
+  key: "…",
+  countries: ["us", "ca"],        // default ["us"]
+  types: ["street_address", "subpremise", "premise"],  // the default
+}
+```
+
+`types` maps to the Places `includedPrimaryTypes` filter — max five values from [Places API type tables](https://developers.google.com/maps/documentation/places/web-service/place-types). An unsupported value rejects the whole request with a 400, so if the default feels too narrow for a market, set **`types: []`** to drop the filter entirely rather than guessing at type names.
+
+### Styling the dropdown
+
+The list ships neutral defaults, all overridable with CSS custom properties:
+
+```css
+.sfh-af-list {
+  --sfh-af-bg: #fff;
+  --sfh-af-color: #1f1f1f;
+  --sfh-af-border-color: #d9d9d9;
+  --sfh-af-radius: 4px;
+  --sfh-af-shadow: 0 4px 12px rgba(0, 0, 0, .15);
+  --sfh-af-font: inherit;
+  --sfh-af-font-size: 14px;
+  --sfh-af-max-height: 280px;
+  --sfh-af-active-bg: #f1f3f4;
+  --sfh-af-secondary-color: #5e5e5e;
+}
+```
+
+Classes, if you need finer control: `.sfh-af-list`, `.sfh-af-item` (`[data-active="true"]` when keyboard-focused), `.sfh-af-item-main`, `.sfh-af-item-secondary`, `.sfh-af-attribution`.
+
+The `Google Maps` footer is **required** by the Places policy whenever suggestions are shown without a Google map. Don't remove it.
+
+### Cost
+
+Requests are debounced 250ms and only fire from 3 characters up. One completed pick bills as a single *Autocomplete session* at the **Essentials** tier — the cheapest — because only `addressComponents` and `formattedAddress` are requested. Adding a Pro-tier field like `displayName` would upgrade the billing tier of every lookup.
 
 ## What the handler adds to your page at runtime
 
@@ -237,6 +347,9 @@ Set `ghl.isSurvey: true` to POST to `backend.leadconnectorhq.com/surveys/submit`
 
 ## Notes
 
-- `intl-tel-input` version is pinned in `ITI_VERSION` at the top of `strikerFormHandler.js`. Bump all three CDN URLs together when upgrading.
+- `intl-tel-input` version is pinned in `ITI_VERSION` near the top of the `strikerFormHandler` function. Bump all three CDN URLs together when upgrading.
 - reCAPTCHA Enterprise script is injected only when `ghl.formId` is set. The badge is hidden via injected CSS.
-- Multiple calls to `strikerFormHandler` on the same page share one intl-tel-input asset load (memoized on `window.__itiAssetsPromise`).
+- Multiple calls to `strikerFormHandler` on the same page share one intl-tel-input asset load (memoized on `window.__itiAssetsPromise`), one Google Maps load (`window.__googleMapsPromise`), and one country lookup (`window.__itiCountryPromise`).
+- The `ipapi.co` country lookup is cached in `localStorage` under `sfh_iti_country` for 24h, so repeat visits and multi-step funnels don't re-request it. Failures are never cached.
+- Address autofill and phone input both degrade quietly: if the CDN or API is unavailable the field stays a plain text input and the form still submits.
+- Every helper lives inside the `strikerFormHandler` function, so the script adds exactly one name to the page's global scope.
