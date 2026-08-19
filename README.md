@@ -156,9 +156,9 @@ Two modes:
 
 ## Address autofill
 
-Turns the form's existing `[name="address"]` input into an autocompleting field with a suggestions dropdown, powered by the Google Places API.
+Swaps the form's `[name="address"]` input for Google's own [Place Autocomplete widget](https://developers.google.com/maps/documentation/javascript/place-autocomplete-new) — an input with a suggestions dropdown that Google renders, styles, and keeps accessible (screen readers, keyboard nav, RTL) for you.
 
-The input itself is **not replaced** — it keeps your classes, placeholder, `required`, and `name`, exactly like the phone field. The dropdown is rendered separately and positioned under it.
+The widget brings its own input and can't adopt an existing one, so the handler inserts it after your `<input name="address">` and hides that input, keeping it in the DOM as the value carrier. Your `name` still submits, GHL still reads it, and the handler copies your input's computed styles onto the widget so it matches the rest of the form out of the box.
 
 ### Google Cloud setup
 
@@ -187,19 +187,27 @@ strikerFormHandler({
 });
 ```
 
+Your markup stays a plain input — nothing Google-specific in the HTML:
+
+```html
+<input name="address" placeholder="Street address" required />
+```
+
+The `placeholder` is carried over to the widget. `required` keeps working, but is enforced by the handler rather than the browser (a hidden field can't be natively validated), showing `alert("Please enter your address.")` on an empty submit.
+
 ### The two modes
 
 **`single_field: true`** — only `[name="address"]` is touched, and it receives the full formatted address:
 
 ```html
-<input name="address" placeholder="Your address" />
-<!-- → "1600 Amphitheatre Pkwy, Mountain View, CA 94043, USA" -->
+<input name="address" />
+<!-- → "1600 Amphitheatre Pkwy #200, Mountain View, CA 94043, USA" -->
 ```
 
 **`single_field: false`** — the address is broken apart across the GHL standard field names:
 
 ```html
-<input name="address" />      <!-- → "1600 Amphitheatre Parkway"  (street number + route + unit) -->
+<input name="address" />      <!-- → "1600 Amphitheatre Parkway #200"  (number + route + unit) -->
 <input name="city" />         <!-- → "Mountain View" -->
 <input name="state" />        <!-- → "California"    (full name) -->
 <input name="postal_code" />  <!-- → "94043-1351"    (zip + suffix) -->
@@ -212,10 +220,12 @@ Any of these that don't exist on the form are skipped silently — a form with j
 
 ```html
 <select name="state">
-  <option value="CA">California</option>  <!-- matched by text  -->
+  <option value="CA">California</option>          <!-- matched by text  -->
   <option value="California">California</option>  <!-- matched by value -->
 </select>
 ```
+
+If a visitor types an address and submits **without** picking a suggestion, whatever they typed is copied into `[name="address"]` on submit rather than being lost.
 
 ### Tuning suggestions
 
@@ -227,34 +237,33 @@ address_autofill: {
 }
 ```
 
-`types` maps to the Places `includedPrimaryTypes` filter — max five values from [Places API type tables](https://developers.google.com/maps/documentation/places/web-service/place-types). An unsupported value rejects the whole request with a 400, so if the default feels too narrow for a market, set **`types: []`** to drop the filter entirely rather than guessing at type names.
+`types` maps to the Places `includedPrimaryTypes` filter — max five values from the [Places API type tables](https://developers.google.com/maps/documentation/places/web-service/place-types). An unsupported value rejects the whole request with a 400, so if the default feels too narrow for a market, set **`types: []`** to drop the filter entirely rather than guessing at type names.
 
-### Styling the dropdown
+### Styling
 
-The list ships neutral defaults, all overridable with CSS custom properties:
+The widget's input sits in a closed shadow DOM, so ordinary CSS can't reach it. The handler works around that by copying your original input's computed font, colour, border, padding, height, radius, and shadow onto the widget — so by default it already looks like your other fields.
+
+To override, use `::part()`:
 
 ```css
-.sfh-af-list {
-  --sfh-af-bg: #fff;
-  --sfh-af-color: #1f1f1f;
-  --sfh-af-border-color: #d9d9d9;
-  --sfh-af-radius: 4px;
-  --sfh-af-shadow: 0 4px 12px rgba(0, 0, 0, .15);
-  --sfh-af-font: inherit;
-  --sfh-af-font-size: 14px;
-  --sfh-af-max-height: 280px;
-  --sfh-af-active-bg: #f1f3f4;
-  --sfh-af-secondary-color: #5e5e5e;
+gmp-place-autocomplete::part(input) {
+  border-color: #6461f2;
+}
+gmp-place-autocomplete::part(prediction-item) {
+  padding: 12px;
 }
 ```
 
-Classes, if you need finer control: `.sfh-af-list`, `.sfh-af-item` (`[data-active="true"]` when keyboard-focused), `.sfh-af-item-main`, `.sfh-af-item-secondary`, `.sfh-af-attribution`.
+Available parts: `input`, `prediction-list`, `prediction-item`, `prediction-item-icon`, `prediction-item-main-text`, `prediction-item-secondary-text`, `prediction-item-match`, `prediction-item-selected`, `focus-ring`.
 
-The `Google Maps` footer is **required** by the Places policy whenever suggestions are shown without a Google map. Don't remove it.
+The handler's generated rule is scoped to `[data-sfh-af="<formId>"]` and injected at the very top of `<head>`, so your own stylesheet wins on equal specificity.
+
+Google's widget renders its own attribution, so nothing extra is required by the Places policy.
 
 ### Cost
 
-Requests are debounced 250ms and only fire from 3 characters up. One completed pick bills as a single *Autocomplete session* at the **Essentials** tier — the cheapest — because only `addressComponents` and `formattedAddress` are requested. Adding a Pro-tier field like `displayName` would upgrade the billing tier of every lookup.
+One completed pick bills as a single *Autocomplete session* at the **Essentials** tier — the cheapest — because only `addressComponents` and `formattedAddress` are requested, and the widget handles session tokens itself. Adding a Pro-tier field like `displayName` would upgrade the billing tier of every lookup.
+
 
 ## What the handler adds to your page at runtime
 
@@ -351,5 +360,5 @@ Set `ghl.isSurvey: true` to POST to `backend.leadconnectorhq.com/surveys/submit`
 - reCAPTCHA Enterprise script is injected only when `ghl.formId` is set. The badge is hidden via injected CSS.
 - Multiple calls to `strikerFormHandler` on the same page share one intl-tel-input asset load (memoized on `window.__itiAssetsPromise`), one Google Maps load (`window.__googleMapsPromise`), and one country lookup (`window.__itiCountryPromise`).
 - The `ipapi.co` country lookup is cached in `localStorage` under `sfh_iti_country` for 24h, so repeat visits and multi-step funnels don't re-request it. Failures are never cached.
-- Address autofill and phone input both degrade quietly: if the CDN or API is unavailable the field stays a plain text input and the form still submits.
+- Address autofill and phone input both degrade quietly: if the CDN or API is unavailable the field stays a plain text input (still `required`, still named `address`) and the form still submits.
 - Every helper lives inside the `strikerFormHandler` function, so the script adds exactly one name to the page's global scope.
