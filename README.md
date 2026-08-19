@@ -210,7 +210,7 @@ The `placeholder` is carried over to the widget. `required` keeps working, but i
 <input name="address" />      <!-- → "1600 Amphitheatre Parkway #200"  (number + route + unit) -->
 <input name="city" />         <!-- → "Mountain View" -->
 <input name="state" />        <!-- → "California"    (full name) -->
-<input name="postal_code" />  <!-- → "94043-1351"    (zip + suffix) -->
+<input name="postal_code" />  <!-- → "94043"         (5-digit ZIP)  -->
 <input name="country" />      <!-- → "US"            (ISO code)     -->
 ```
 

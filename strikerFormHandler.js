@@ -172,15 +172,16 @@ const strikerFormHandler = ({ formId, hasPhoneNumber, phoneNumberIsRequired, pho
     const components = place.addressComponents || [];
     const street = [getAddressComponent(components, ["street_number"]), getAddressComponent(components, ["route"])].filter(Boolean).join(" ");
     const subpremise = getAddressComponent(components, ["subpremise"]);
+    //* postal_code_suffix (the "+4") is deliberately ignored: GHL and US lead forms want the bare
+    //* 5-digit ZIP, and a hyphenated value gets mangled by input masks and numeric fields downstream.
     const postalCode = getAddressComponent(components, ["postal_code"]);
-    const postalSuffix = getAddressComponent(components, ["postal_code_suffix"]);
 
     //* subpremise comes back either bare ("200") or already labelled ("Suite 200"); only the bare form needs a #.
     const unit = /^\d+$/.test(subpremise) ? `#${subpremise}` : subpremise;
     setAddressField("address", [street, unit].filter(Boolean).join(" "));
     setAddressField("city", getAddressComponent(components, ADDRESS_CITY_TYPES));
     setAddressField("state", getAddressComponent(components, ["administrative_area_level_1"]));
-    setAddressField("postal_code", postalSuffix ? `${postalCode}-${postalSuffix}` : postalCode);
+    setAddressField("postal_code", postalCode);
     setAddressField("country", getAddressComponent(components, ["country"], true));
   };
 
