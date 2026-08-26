@@ -9,9 +9,19 @@ const strikerFormHandler = ({ formId, hasPhoneNumber, phoneNumberIsRequired, pho
   const ITI_COUNTRY_FALLBACK = "US";
 
   const MAPS_JS_SRC = "https://maps.googleapis.com/maps/api/js";
-  //* Copied off the original input onto the widget's ::part(input). Longhands only: computed shorthands
-  //* like `border` and `font` come back empty in Chrome.
-  const ADDRESS_INHERITED_STYLES = ["font-family", "font-size", "font-weight", "font-style", "line-height", "letter-spacing", "text-transform", "text-align", "color", "background-color", "padding", "border-width", "border-style", "border-color", "border-radius", "height", "min-height", "box-shadow"];
+  //* Copied off the address input onto the suggestion dropdown so it matches the form it hangs under.
+  //* Longhands only: computed shorthands like `border` and `font` come back empty in Chrome.
+  const ADDRESS_DROPDOWN_STYLES = ["font-family", "font-size", "color", "border-radius"];
+  //* Shorter than this and the predictions are too broad to be worth a request.
+  const ADDRESS_MIN_QUERY_LENGTH = 3;
+  const ADDRESS_DEBOUNCE_MS = 250;
+  //* How long the dropdown survives a blur, so a tap on an option still lands on it.
+  const ADDRESS_BLUR_GRACE_MS = 300;
+  const ADDRESS_SPINNER_SIZE = 18;
+  //* "Powered by Google" is mandatory once predictions are rendered outside Google's own widget:
+  //* https://developers.google.com/maps/documentation/javascript/policies
+  const ADDRESS_ATTRIBUTION_LIGHT = "https://maps.gstatic.com/mapfiles/api-3/images/powered-by-google-on-white3.png";
+  const ADDRESS_ATTRIBUTION_DARK = "https://maps.gstatic.com/mapfiles/api-3/images/powered-by-google-on-non-white3.png";
   //* Place Details *Essentials*-tier fields only. Adding displayName would bill the whole call as Pro.
   const ADDRESS_PLACE_FIELDS = ["addressComponents", "formattedAddress"];
   //* Places API (New) takes up to five Table A/B types; the legacy "address" collection is not one of them.
@@ -39,6 +49,26 @@ const strikerFormHandler = ({ formId, hasPhoneNumber, phoneNumberIsRequired, pho
   ];
 
   //* Memoized on window so multiple handlers on the same page share one load.
+  //* Shared by the submit button and the address field, so the two spinners can never drift apart.
+  const buildSpinnerSvg = (size, extraStyle = "") => `
+        <svg style="display:block;${extraStyle}" width="${size}" height="${size}" stroke="currentColor"
+          viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .spinner_V8m1 { transform-origin: center; animation: spinner_zKoa 2s linear infinite }
+            .spinner_V8m1 circle { stroke-linecap: round; animation: spinner_YpZS 1.5s ease-in-out infinite }
+            @keyframes spinner_zKoa { 100% { transform: rotate(360deg) } }
+            @keyframes spinner_YpZS {
+              0%           { stroke-dasharray: 0 150;  stroke-dashoffset: 0   }
+              47.5%        { stroke-dasharray: 42 150; stroke-dashoffset: -16 }
+              95%, 100%    { stroke-dasharray: 42 150; stroke-dashoffset: -59 }
+            }
+          </style>
+          <g class="spinner_V8m1">
+            <circle cx="12" cy="12" r="9.5" fill="none" stroke-width="3"></circle>
+          </g>
+        </svg>
+      `;
+
   const loadItiAssets = () => {
     if (window.__itiAssetsPromise) return window.__itiAssetsPromise;
     window.__itiAssetsPromise = (async () => {
@@ -123,126 +153,367 @@ const strikerFormHandler = ({ formId, hasPhoneNumber, phoneNumberIsRequired, pho
     return window.__googleMapsPromise;
   };
 
-  //* The widget's input lives in a closed shadow DOM, so the only way to make it match the rest of the
-  //* form is to copy the original input's computed styles through ::part(input).
-  const inheritAddressFieldStyles = (element) => {
-    const computed = getComputedStyle(addressField);
-    const declarations = ADDRESS_INHERITED_STYLES.map((property) => `${property}:${computed.getPropertyValue(property)}`).join(";");
-    const style = document.createElement("style");
-    style.textContent = `
-      [data-sfh-af='${formId}']{display:block;width:100%;margin:${computed.margin}}
-      [data-sfh-af='${formId}']::part(input){box-sizing:border-box;width:100%;${declarations}}
-    `;
-    //* Prepended so a site's own ::part(input) rules, which land later in the cascade, still win.
-    document.head.prepend(style);
-  };
-
-  //* Component type order is not guaranteed, so match on `includes` rather than on types[0].
-  const getAddressComponent = (components, types, useShortText) => {
-    const match = components.find((component) => types.some((type) => component.types.includes(type)));
-    if (!match) return "";
-    return (useShortText ? match.shortText : match.longText) || "";
-  };
-
-  //* <select>-tolerant: match an option by value, then by visible text, so "Texas" also lands in the
-  //* two-letter <option value="TX"> markup some forms use.
-  const setAddressField = (name, value) => {
-    const field = form.querySelector(`[name='${name}']`);
-    if (!field || !value) return;
-
-    if (field.tagName === "SELECT") {
-      const options = Array.from(field.options);
-      const option = options.find((item) => item.value.toLowerCase() === value.toLowerCase()) || options.find((item) => item.text.trim().toLowerCase() === value.toLowerCase());
-      if (!option) return;
-      field.value = option.value;
-    } else {
-      field.value = value;
-    }
-
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-    field.dispatchEvent(new Event("change", { bubbles: true }));
-  };
-
-  const applyPlace = (place) => {
-    if (address_autofill.single_field) {
-      setAddressField("address", place.formattedAddress);
-      return;
-    }
-
-    const components = place.addressComponents || [];
-    const street = [getAddressComponent(components, ["street_number"]), getAddressComponent(components, ["route"])].filter(Boolean).join(" ");
-    const subpremise = getAddressComponent(components, ["subpremise"]);
-    //* postal_code_suffix (the "+4") is deliberately ignored: GHL and US lead forms want the bare
-    //* 5-digit ZIP, and a hyphenated value gets mangled by input masks and numeric fields downstream.
-    const postalCode = getAddressComponent(components, ["postal_code"]);
-
-    //* subpremise comes back either bare ("200") or already labelled ("Suite 200"); only the bare form needs a #.
-    const unit = /^\d+$/.test(subpremise) ? `#${subpremise}` : subpremise;
-    setAddressField("address", [street, unit].filter(Boolean).join(" "));
-    setAddressField("city", getAddressComponent(components, ADDRESS_CITY_TYPES));
-    setAddressField("state", getAddressComponent(components, ["administrative_area_level_1"]));
-    setAddressField("postal_code", postalCode);
-    setAddressField("country", getAddressComponent(components, ["country"], true));
-  };
-
-  const initAddressAutofill = async () => {
+  //* The whole address feature: the Places lookup, the dropdown it renders, and the state the two
+  //* share. Nothing leaks out to the rest of the handler — [name='address'] is the only contract, and
+  //* buildGhlBody reads it exactly as it would if this never ran.
+  const initPlaces = async () => {
     try {
-      const places = await loadGoogleMapsAssets(address_autofill.key);
+      const { AutocompleteSuggestion, AutocompleteSessionToken } = await loadGoogleMapsAssets(address_autofill.key);
 
-      const options = { includedRegionCodes: address_autofill.countries || ["us"] };
-      //* An explicit empty `types` means "no primary type filter" — the escape hatch when the default is
-      //* too narrow for a market, since an unsupported type makes the whole request 400.
-      const types = address_autofill.types || ADDRESS_DEFAULT_TYPES;
-      if (types.length) options.includedPrimaryTypes = types;
-      if (addressField.placeholder) options.placeholder = addressField.placeholder;
+      let suggestions = [];
+      let activeIndex = -1;
+      let sessionToken = null;
+      let isApplyingPlace = false;
+      let debounceTimer = null;
+      let blurTimer = null;
+      let requestSeq = 0;
 
-      autocompleteElement = new places.PlaceAutocompleteElement(options);
-      autocompleteElement.dataset.sfhAf = formId;
-      inheritAddressFieldStyles(autocompleteElement);
+      //* Component type order is not guaranteed, so match on `includes` rather than on types[0].
+      const getAddressComponent = (components, types, useShortText) => {
+        const match = components.find((component) => types.some((type) => component.types.includes(type)));
+        if (!match) return "";
+        return (useShortText ? match.shortText : match.longText) || "";
+      };
 
-      //* The widget brings its own input and cannot adopt an existing one, so the original stays in the
-      //* DOM as a hidden carrier: buildGhlBody and any non-GHL backend keep reading [name='address'].
-      addressField.after(autocompleteElement);
-      addressField.hidden = true;
-      addressField.style.display = "none";
-      //* A required control that is not focusable blocks native validation outright, so the requirement
-      //* moves to isAddressValid.
-      addressIsRequired = addressField.required;
-      addressField.required = false;
+      //* <select>-tolerant: match an option by value, then by visible text, so "Texas" also lands in the
+      //* two-letter <option value="TX"> markup some forms use.
+      const setAddressField = (name, value) => {
+        const field = form.querySelector(`[name='${name}']`);
+        //* Only a missing *input* is a skip. A missing *component* means the picked place genuinely has
+        //* no street (or city, …), so the field has to be cleared — otherwise it keeps the visitor's raw
+        //* search text, or whatever a previous pick left there.
+        if (!field) return;
+        //* Normalised up front: formattedAddress can come back undefined, and `field.value = undefined`
+        //* writes the literal string "undefined".
+        const nextValue = value || "";
 
-      autocompleteElement.addEventListener("gmp-error", () => {
-        console.error("strikerFormHandler: Google Places rejected the request. Check the key's API restrictions and that Places API (New) is enabled.");
-      });
+        if (field.tagName === "SELECT") {
+          const options = Array.from(field.options);
+          //* Clearing a <select> means selecting its own blank option; one that has none — a fixed state
+          //* list — has no meaningful cleared state, so keep the current selection over blanking it.
+          const option = nextValue
+            ? options.find((item) => item.value.toLowerCase() === nextValue.toLowerCase()) || options.find((item) => item.text.trim().toLowerCase() === nextValue.toLowerCase())
+            : options.find((item) => item.value === "");
+          if (!option) return;
+          field.value = option.value;
+        } else {
+          field.value = nextValue;
+        }
 
-      autocompleteElement.addEventListener("gmp-select", async ({ placePrediction }) => {
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      const applyPlace = (place) => {
+        if (address_autofill.single_field) {
+          setAddressField("address", place.formattedAddress);
+          return;
+        }
+
+        const components = place.addressComponents || [];
+        const street = [getAddressComponent(components, ["street_number"]), getAddressComponent(components, ["route"])].filter(Boolean).join(" ");
+        const subpremise = getAddressComponent(components, ["subpremise"]);
+        //* postal_code_suffix (the "+4") is deliberately ignored: GHL and US lead forms want the bare
+        //* 5-digit ZIP, and a hyphenated value gets mangled by input masks and numeric fields downstream.
+        const postalCode = getAddressComponent(components, ["postal_code"]);
+
+        //* subpremise comes back either bare ("200") or already labelled ("Suite 200"); only the bare form needs a #.
+        const unit = /^\d+$/.test(subpremise) ? `#${subpremise}` : subpremise;
+        setAddressField("address", [street, unit].filter(Boolean).join(" "));
+        setAddressField("city", getAddressComponent(components, ADDRESS_CITY_TYPES));
+        setAddressField("state", getAddressComponent(components, ["administrative_area_level_1"]));
+        setAddressField("postal_code", postalCode);
+        setAddressField("country", getAddressComponent(components, ["country"], true));
+      };
+
+      //* One <style> for the whole page — several handlers share it, and each dropdown carries its own
+      //* --sfh-af-* values inline, copied off its own form's address input.
+      const injectAddressStyles = () => {
+        if (window.__sfhAddressStylesInjected) return;
+        window.__sfhAddressStylesInjected = true;
+        const style = document.createElement("style");
+        style.textContent = `
+          .sfh-address-suggestions{position:absolute;z-index:2147483000;box-sizing:border-box;margin:0;padding:0;list-style:none;overflow:hidden auto;max-height:min(60vh,320px);overscroll-behavior:contain;font-family:var(--sfh-af-font-family);font-size:var(--sfh-af-font-size);color:var(--sfh-af-color);background:var(--sfh-af-surface);border-radius:var(--sfh-af-border-radius);box-shadow:0 1px 2px 0 rgba(60,64,67,.3),0 2px 6px 2px rgba(60,64,67,.15)}
+          .sfh-address-suggestions[hidden]{display:none}
+          .sfh-address-suggestion{display:flex;flex-direction:column;gap:2px;padding:10px 12px;cursor:pointer;text-align:left}
+          .sfh-address-suggestion:hover,.sfh-address-suggestion[aria-selected='true']{background:var(--sfh-af-highlight)}
+          .sfh-address-suggestion-secondary{font-size:.85em;opacity:.7}
+          .sfh-address-attribution{display:flex;justify-content:flex-end;padding:6px 12px}
+          .sfh-address-attribution img{display:block;width:auto;height:14px}
+      .sfh-address-spinner{position:absolute;z-index:2147483000;line-height:0;pointer-events:none}
+      .sfh-address-spinner[hidden]{display:none}
+        `;
+        //* Prepended so a site's own .sfh-address-* rules, landing later in the cascade, still win.
+        document.head.prepend(style);
+      };
+
+      //* rgb()/rgba() is all getComputedStyle ever returns for a colour, so parsing the digits is enough.
+      const parseColorChannels = (color) => (color.match(/[\d.]+/g) || []).map(Number);
+
+      //* An input that inherits the page's surface computes to a fully transparent background-color. The
+      //* dropdown floats over arbitrary content, so it needs an opaque colour of its own to fall back to.
+      const resolveAddressSurface = (computed) => {
+        const channels = parseColorChannels(computed.backgroundColor);
+        return channels.length >= 3 && channels[3] !== 0 ? computed.backgroundColor : "#ffffff";
+      };
+
+      const isDarkColor = (color) => {
+        const [red, green, blue] = parseColorChannels(color);
+        if (red === undefined) return false;
+        return (red * 299 + green * 587 + blue * 114) / 1000 < 128;
+      };
+
+      //* Google's own widget rendered this for us; a hand-rolled prediction list has to show it itself.
+      //* The asset variant follows the dropdown's surface so the logo stays legible either way.
+      const buildAddressAttribution = (surface) => {
+        const item = document.createElement("li");
+        item.className = "sfh-address-attribution";
+        item.setAttribute("role", "presentation");
+        const image = document.createElement("img");
+        image.src = isDarkColor(surface) ? ADDRESS_ATTRIBUTION_DARK : ADDRESS_ATTRIBUTION_LIGHT;
+        image.alt = "Powered by Google";
+        item.append(image);
+        return item;
+      };
+
+      const buildSuggestionList = (computed) => {
+        const surface = resolveAddressSurface(computed);
+        const list = document.createElement("ul");
+        list.className = "sfh-address-suggestions";
+        list.id = `sfh-address-suggestions-${formId}`;
+        list.dataset.sfhAf = formId;
+        list.setAttribute("role", "listbox");
+        list.hidden = true;
+        ADDRESS_DROPDOWN_STYLES.forEach((property) => list.style.setProperty(`--sfh-af-${property}`, computed.getPropertyValue(property)));
+        list.style.setProperty("--sfh-af-surface", surface);
+        list.style.setProperty("--sfh-af-highlight", isDarkColor(surface) ? "rgba(255,255,255,.12)" : "rgba(0,0,0,.06)");
+        //* Appended to <body> rather than next to the input: an ancestor with overflow:hidden or its own
+        //* stacking context — routine on page-builder layouts — would otherwise clip the dropdown.
+        document.body.appendChild(list);
+        return list;
+      };
+
+      //* Same <body>-anchored trick as the dropdown, for the same reason: it sits over the input
+      //* without touching the page's markup, and no ancestor overflow can clip it away.
+      const buildSpinner = (computed) => {
+        const element = document.createElement("div");
+        element.className = "sfh-address-spinner";
+        element.dataset.sfhAf = formId;
+        element.hidden = true;
+        //* stroke="currentColor" inside the SVG, so this is what tints it to match the field's text.
+        element.style.color = computed.color;
+        element.innerHTML = buildSpinnerSvg(ADDRESS_SPINNER_SIZE);
+        document.body.appendChild(element);
+        return element;
+      };
+
+      //* Both overlays float off <body>, so both are placed from the field's live rect. The guard
+      //* keeps the always-registered scroll listener free when there is nothing on screen to move.
+      const positionAddressOverlays = () => {
+        if (suggestionList.hidden && spinner.hidden) return;
+        const rect = addressField.getBoundingClientRect();
+        suggestionList.style.top = `${rect.bottom + window.scrollY + 4}px`;
+        suggestionList.style.left = `${rect.left + window.scrollX}px`;
+        suggestionList.style.width = `${rect.width}px`;
+        spinner.style.top = `${rect.top + window.scrollY + (rect.height - ADDRESS_SPINNER_SIZE) / 2}px`;
+        spinner.style.left = `${rect.right + window.scrollX - ADDRESS_SPINNER_SIZE - spinnerInset}px`;
+      };
+
+      const showSpinner = () => {
+        spinner.hidden = false;
+        positionAddressOverlays();
+      };
+
+      const hideSpinner = () => {
+        spinner.hidden = true;
+      };
+
+      const openSuggestions = () => {
+        suggestionList.hidden = false;
+        addressField.setAttribute("aria-expanded", "true");
+        positionAddressOverlays();
+      };
+
+      const closeSuggestions = () => {
+        suggestions = [];
+        activeIndex = -1;
+        addressField.removeAttribute("aria-activedescendant");
+        if (suggestionList.hidden) return;
+        suggestionList.hidden = true;
+        addressField.setAttribute("aria-expanded", "false");
+      };
+
+      const setActiveSuggestion = (index) => {
+        const items = suggestionList.querySelectorAll(".sfh-address-suggestion");
+        items.forEach((item, itemIndex) => item.setAttribute("aria-selected", String(itemIndex === index)));
+        activeIndex = index;
+        if (index === -1) {
+          addressField.removeAttribute("aria-activedescendant");
+          return;
+        }
+        addressField.setAttribute("aria-activedescendant", items[index].id);
+        items[index].scrollIntoView({ block: "nearest" });
+      };
+
+      const renderSuggestions = (predictions) => {
+        if (!predictions.length) {
+          closeSuggestions();
+          return;
+        }
+
+        suggestions = predictions;
+        suggestionList.textContent = "";
+        predictions.forEach((prediction, index) => {
+          const item = document.createElement("li");
+          item.className = "sfh-address-suggestion";
+          item.id = `${suggestionList.id}-${index}`;
+          item.setAttribute("role", "option");
+          item.setAttribute("aria-selected", "false");
+
+          const main = document.createElement("span");
+          main.className = "sfh-address-suggestion-main";
+          //* mainText and secondaryText are both nullable on a PlacePrediction; `text` always has a value.
+          main.textContent = prediction.mainText?.text || prediction.text.text;
+          item.append(main);
+
+          const secondaryText = prediction.secondaryText?.text;
+          if (secondaryText) {
+            const secondary = document.createElement("span");
+            secondary.className = "sfh-address-suggestion-secondary";
+            secondary.textContent = secondaryText;
+            item.append(secondary);
+          }
+
+          item.addEventListener("click", () => selectSuggestion(index));
+          suggestionList.append(item);
+        });
+
+        suggestionList.append(buildAddressAttribution(suggestionList.style.getPropertyValue("--sfh-af-surface")));
+        setActiveSuggestion(-1);
+        openSuggestions();
+      };
+
+      const selectSuggestion = async (index) => {
+        const prediction = suggestions[index];
+        if (!prediction) return;
+        closeSuggestions();
+
         try {
-          //* The widget manages its own session tokens, so nothing needs to be threaded through here.
-          const place = placePrediction.toPlace();
+          showSpinner();
+          const place = prediction.toPlace();
           await place.fetchFields({ fields: ADDRESS_PLACE_FIELDS });
+          //* setAddressField dispatches input events; without this the write would look like typing and
+          //* immediately fire a fresh lookup for the address that was just picked.
+          isApplyingPlace = true;
           applyPlace(place);
-          //* Read after the await so the widget has settled its own text; syncAddressFreeText compares
-          //* against this to tell a picked address from one typed over the top of it.
-          selectedAddressText = autocompleteElement.value;
+          //* fetchFields closes the billing session, so the next keystroke has to open a new one.
+          sessionToken = null;
         } catch (error) {
           console.error(error);
+        } finally {
+          hideSpinner();
+          isApplyingPlace = false;
+        }
+      };
+
+      const requestSuggestions = async (input) => {
+        const seq = ++requestSeq;
+        try {
+          //* One token spans every keystroke up to the pick, so the whole lookup bills as a single
+          //* Autocomplete session instead of one standalone request per keystroke.
+          sessionToken = sessionToken || new AutocompleteSessionToken();
+
+          const request = { input, sessionToken, includedRegionCodes: address_autofill.countries || ["us"] };
+          //* An explicit empty `types` means "no primary type filter" — the escape hatch when the default
+          //* is too narrow for a market, since an unsupported type makes the whole request 400.
+          const types = address_autofill.types || ADDRESS_DEFAULT_TYPES;
+          if (types.length) request.includedPrimaryTypes = types;
+
+          const { suggestions: results } = await AutocompleteSuggestion.fetchAutocompleteSuggestions(request);
+          //* A later keystroke already fired; its answer is the one that should win.
+          if (seq !== requestSeq) return;
+          hideSpinner();
+          //* Query predictions carry no placePrediction and cannot be resolved to a place.
+          renderSuggestions(results.map((result) => result.placePrediction).filter(Boolean));
+        } catch (error) {
+          //* A superseded request must not clear the spinner the newer keystroke just turned on.
+          if (seq !== requestSeq) return;
+          hideSpinner();
+          closeSuggestions();
+          console.error(error);
+        }
+      };
+
+      injectAddressStyles();
+      const addressStyles = getComputedStyle(addressField);
+      const spinnerInset = parseFloat(addressStyles.paddingRight) || 10;
+      const suggestionList = buildSuggestionList(addressStyles);
+      const spinner = buildSpinner(addressStyles);
+
+      //* Registered for good rather than around each open: positionAddressOverlays early-returns
+      //* while both overlays are hidden, which is cheaper than the add/remove bookkeeping was.
+      //* Capture phase so they also track a scrolling ancestor, not just the window.
+      window.addEventListener("scroll", positionAddressOverlays, true);
+      window.addEventListener("resize", positionAddressOverlays);
+
+      //* The form's own input stays the input: nothing is hidden, nothing is swapped in beside it, so
+      //* `required` is validated natively again and buildGhlBody keeps reading [name='address'] as the
+      //* value carrier — whether the visitor picked a suggestion or just typed and submitted.
+      addressField.setAttribute("autocomplete", "off");
+      addressField.setAttribute("role", "combobox");
+      addressField.setAttribute("aria-autocomplete", "list");
+      addressField.setAttribute("aria-expanded", "false");
+      addressField.setAttribute("aria-controls", suggestionList.id);
+
+      addressField.addEventListener("input", () => {
+        if (isApplyingPlace) return;
+        clearTimeout(debounceTimer);
+        const query = addressField.value.trim();
+        if (query.length < ADDRESS_MIN_QUERY_LENGTH) {
+          //* Clearing the field abandons the lookup, so the next one starts a session of its own.
+          requestSeq += 1;
+          sessionToken = null;
+          hideSpinner();
+          closeSuggestions();
+          return;
+        }
+        //* Spins from the moment the lookup is scheduled, not from when the request fires: the
+        //* debounce alone is 250ms, and toggling around a fast response would just flash.
+        showSpinner();
+        debounceTimer = setTimeout(() => requestSuggestions(query), ADDRESS_DEBOUNCE_MS);
+      });
+
+      addressField.addEventListener("keydown", (event) => {
+        if (suggestionList.hidden || !suggestions.length) return;
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          const wrapped = (activeIndex + step + suggestions.length) % suggestions.length;
+          setActiveSuggestion(activeIndex === -1 ? (step === 1 ? 0 : suggestions.length - 1) : wrapped);
+        } else if (event.key === "Enter" && activeIndex !== -1) {
+          //* Without this the Enter that picks a suggestion would also submit the form.
+          event.preventDefault();
+          selectSuggestion(activeIndex);
+        } else if (event.key === "Escape" || event.key === "Tab") {
+          closeSuggestions();
         }
       });
+
+      //* Keeps a desktop click from blurring the input at all...
+      suggestionList.addEventListener("mousedown", (event) => event.preventDefault());
+      //* ...while on touch, where the tap blurs first, the close is deferred so the click still lands
+      //* on the option instead of on an element that has already been torn down.
+      addressField.addEventListener("focusout", () => {
+        clearTimeout(blurTimer);
+        blurTimer = setTimeout(closeSuggestions, ADDRESS_BLUR_GRACE_MS);
+      });
+      addressField.addEventListener("focus", () => clearTimeout(blurTimer));
     } catch (error) {
-      //* Autofill is an enhancement: any failure here leaves the plain input in place, still named
-      //* `address` and still submitted, so the form stays usable.
-      autocompleteElement = null;
+      //* Autofill is an enhancement: any failure here leaves a plain, still-`required` text input that
+      //* submits exactly as it would if the feature had never been configured.
       console.error(error);
     }
   };
-
-  //* The widget owns the visible text, so pull it back into [name='address'] when the visitor typed an
-  //* address and submitted without ever picking a suggestion.
-  const syncAddressFreeText = () => {
-    if (!autocompleteElement || autocompleteElement.value === selectedAddressText) return;
-    addressField.value = autocompleteElement.value;
-  };
-
-  const isAddressValid = () => !addressIsRequired || addressField.value.trim() !== "";
 
   const getCookie = (name) => {
     const cookieMatch = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/([.$?*|{}()[\]\\/+^])/g, "\\$1")}=([^;]*)`));
@@ -396,9 +667,6 @@ const strikerFormHandler = ({ formId, hasPhoneNumber, phoneNumberIsRequired, pho
 
   const phoneField = hasPhoneNumber ? form.querySelector("[name='phone_number']") : null;
   let iti = null;
-  let autocompleteElement = null;
-  let selectedAddressText = null;
-  let addressIsRequired = false;
 
   const initPhoneInput = async () => {
     try {
@@ -420,8 +688,9 @@ const strikerFormHandler = ({ formId, hasPhoneNumber, phoneNumberIsRequired, pho
   const addressField = address_autofill.key ? form.querySelector("[name='address']") : null;
   if (address_autofill.key && !addressField) console.warn("strikerFormHandler: address_autofill is configured but the form has no [name='address'] input.");
   if (addressField) {
-    //* Fire and forget: the address field upgrades itself once the Maps API lands.
-    initAddressAutofill();
+    //* Fire and forget: the address field upgrades itself once the Maps API lands, and stays a plain
+    //* text input if it never does.
+    initPlaces();
   }
 
   const isPhoneValid = () => {
@@ -444,33 +713,11 @@ const strikerFormHandler = ({ formId, hasPhoneNumber, phoneNumberIsRequired, pho
   const originalSubmitLabel = submitBtn.innerHTML;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    syncAddressFreeText();
     if (!isPhoneValid()) {
       alert("Field invalid. Please check for typos.");
       return;
     }
-    if (!isAddressValid()) {
-      alert("Please enter your address.");
-      return;
-    }
-    submitBtn.innerHTML = `
-        <svg style="display:block;margin:auto;" width="24" height="24" stroke="currentColor"
-          viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-          <style>
-            .spinner_V8m1 { transform-origin: center; animation: spinner_zKoa 2s linear infinite }
-            .spinner_V8m1 circle { stroke-linecap: round; animation: spinner_YpZS 1.5s ease-in-out infinite }
-            @keyframes spinner_zKoa { 100% { transform: rotate(360deg) } }
-            @keyframes spinner_YpZS {
-              0%           { stroke-dasharray: 0 150;  stroke-dashoffset: 0   }
-              47.5%        { stroke-dasharray: 42 150; stroke-dashoffset: -16 }
-              95%, 100%    { stroke-dasharray: 42 150; stroke-dashoffset: -59 }
-            }
-          </style>
-          <g class="spinner_V8m1">
-            <circle cx="12" cy="12" r="9.5" fill="none" stroke-width="3"></circle>
-          </g>
-        </svg>
-      `;
+    submitBtn.innerHTML = buildSpinnerSvg(24, "margin:auto;");
     submitBtn.setAttribute("disabled", "disabled");
     if (hasPhoneNumber && iti && phoneField.value.trim() !== "") {
       phoneField.value = iti.getNumber();

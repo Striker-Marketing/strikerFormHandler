@@ -156,9 +156,11 @@ Two modes:
 
 ## Address autofill
 
-Swaps the form's `[name="address"]` input for Google's own [Place Autocomplete widget](https://developers.google.com/maps/documentation/javascript/place-autocomplete-new) — an input with a suggestions dropdown that Google renders, styles, and keeps accessible (screen readers, keyboard nav, RTL) for you.
+Adds Google address suggestions to your form's existing `<input name="address">`. The input stays exactly where it is — your markup, your CSS, your `required` — and a suggestions dropdown renders under it as the visitor types.
 
-The widget brings its own input and can't adopt an existing one, so the handler inserts it after your `<input name="address">` and hides that input, keeping it in the DOM as the value carrier. Your `name` still submits, GHL still reads it, and the handler copies your input's computed styles onto the widget so it matches the rest of the form out of the box.
+The handler uses the [Place Autocomplete Data API](https://developers.google.com/maps/documentation/javascript/place-autocomplete-data) and draws the list itself, rather than dropping in Google's `PlaceAutocompleteElement` widget. That widget goes full-screen on phones — it replaces your page with a white Google search view the moment someone types, and Google offers no way to turn that off. Drawing the list ourselves means it looks the same at every width, inherits your field's font and colours, and can't be clipped by a container with `overflow: hidden`.
+
+Keyboard navigation (↑/↓/Enter/Escape) and screen-reader semantics are wired up for you, and the field shows the same loading spinner as the submit button while it looks an address up.
 
 ### Google Cloud setup
 
@@ -193,7 +195,7 @@ Your markup stays a plain input — nothing Google-specific in the HTML:
 <input name="address" placeholder="Street address" required />
 ```
 
-The `placeholder` is carried over to the widget. `required` keeps working, but is enforced by the handler rather than the browser (a hidden field can't be natively validated), showing `alert("Please enter your address.")` on an empty submit.
+Nothing is added, hidden, or swapped — `placeholder`, `required`, and any classes you set stay on your own input, and `required` is validated natively by the browser like every other field.
 
 ### The two modes
 
@@ -216,6 +218,8 @@ The `placeholder` is carried over to the widget. `required` keeps working, but i
 
 Any of these that don't exist on the form are skipped silently — a form with just `address` and `postal_code` works with no extra config. Because these are the same names GHL submits, they need no mapping: just list them in `ghl.fields`.
 
+Fields the *picked place* has no value for are **cleared**, not left alone. Pick something without a street number — a city, a ZIP — and `address` empties instead of keeping what the visitor typed to find it. Same for the others: a pick never leaves a previous pick's city or ZIP behind. A `<select>` clears to its blank option if it has one, and otherwise keeps its selection.
+
 `state` works with a `<select>` too. The handler matches an option by `value` first, then by visible text, so `"California"` correctly selects either markup:
 
 ```html
@@ -225,7 +229,7 @@ Any of these that don't exist on the form are skipped silently — a form with j
 </select>
 ```
 
-If a visitor types an address and submits **without** picking a suggestion, whatever they typed is copied into `[name="address"]` on submit rather than being lost.
+If a visitor types an address and submits **without** picking a suggestion, whatever they typed submits as-is — it's their own input, so nothing is lost.
 
 ### Tuning suggestions
 
@@ -241,33 +245,29 @@ address_autofill: {
 
 ### Styling
 
-The widget's input sits in a closed shadow DOM, so ordinary CSS can't reach it. The handler works around that by copying your original input's computed font, colour, border, padding, height, radius, and shadow onto the widget — so by default it already looks like your other fields.
+Your `<input name="address">` is untouched, so it keeps whatever CSS you already have on it.
 
-To override, use `::part()`:
+The dropdown copies that input's font, size, colour and border radius, so it matches out of the box. To go further, target these classes — your rules always win over the defaults:
 
 ```css
-gmp-place-autocomplete::part(input) {
-  border-color: #6461f2;
-}
-gmp-place-autocomplete::part(prediction-item) {
-  padding: 12px;
-}
+.sfh-address-suggestions { }                          /* the dropdown */
+.sfh-address-suggestion { }                           /* one row */
+.sfh-address-suggestion[aria-selected="true"] { }     /* highlighted row */
+.sfh-address-suggestion-main { }                      /* street line */
+.sfh-address-suggestion-secondary { }                 /* city/state line */
 ```
 
-Available parts: `input`, `prediction-list`, `prediction-item`, `prediction-item-icon`, `prediction-item-main-text`, `prediction-item-secondary-text`, `prediction-item-match`, `prediction-item-selected`, `focus-ring`.
-
-The handler's generated rule is scoped to `[data-sfh-af="<formId>"]` and injected at the very top of `<head>`, so your own stylesheet wins on equal specificity.
-
-Google's widget renders its own attribution, so nothing extra is required by the Places policy.
+A "Powered by Google" logo is rendered at the bottom of the dropdown. The Places policy requires it when suggestions are shown outside Google's own widget — don't hide it.
 
 ### Cost
 
-One completed pick bills as a single *Autocomplete session* at the **Essentials** tier — the cheapest — because only `addressComponents` and `formattedAddress` are requested, and the widget handles session tokens itself. Adding a Pro-tier field like `displayName` would upgrade the billing tier of every lookup.
+One completed pick bills as a single *Autocomplete session* at the **Essentials** tier — the cheapest — because only `addressComponents` and `formattedAddress` are requested and every keystroke of a lookup shares one session token. Requests are also debounced and skipped below 3 characters, so typing an address is a handful of calls, not one per key. Adding a Pro-tier field like `displayName` would upgrade the billing tier of every lookup.
 
 
 ## What the handler adds to your page at runtime
 
 - Hidden `<input hidden>` per URL query param, appended to the form before submit (so any non-GHL backend also sees UTMs).
+- With `address_autofill`: one `<ul class="sfh-address-suggestions">` and one `<div class="sfh-address-spinner">` appended to `<body>` per form (positioned against the address field, so no container can clip them), and one shared `<style>` at the top of `<head>`.
 - On successful submit:
   ```js
   window.dataLayer.push({ event: "form-submitted" });
