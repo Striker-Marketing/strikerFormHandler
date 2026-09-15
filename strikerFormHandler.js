@@ -1,4 +1,13 @@
-const strikerFormHandler = ({ formId, hasPhoneNumber, phoneNumberIsRequired, phoneNumberIsExternal, ghl = { formId: undefined, terms_and_conditions: undefined, location_id: undefined, isSurvey: undefined, captchaToken: undefined, updateContactOnly: undefined, fields: undefined, customFields: undefined, hasPath: undefined, hasTaboola: undefined }, address_autofill = { key: undefined, single_field: undefined, countries: undefined, types: undefined }, submitFunction = () => {} }) => {
+const strikerFormHandler = ({
+  formId,
+  hasPhoneNumber,
+  phoneNumberIsRequired,
+  phoneNumberIsExternal,
+  forceItiCountry,
+  ghl = { formId: undefined, terms_and_conditions: undefined, location_id: undefined, isSurvey: undefined, captchaToken: undefined, updateContactOnly: undefined, fields: undefined, customFields: undefined, hasPath: undefined, hasTaboola: undefined },
+  address_autofill = { key: undefined, single_field: undefined, countries: undefined, types: undefined },
+  submitFunction = () => {},
+}) => {
   const ITI_VERSION = "29.0.4";
   const ITI_CSS_HREF = `https://cdn.jsdelivr.net/npm/intl-tel-input@${ITI_VERSION}/dist/css/intlTelInput.css`;
   const ITI_JS_SRC = `https://cdn.jsdelivr.net/npm/intl-tel-input@${ITI_VERSION}/dist/js/intlTelInput.min.js`;
@@ -191,9 +200,7 @@ const strikerFormHandler = ({ formId, hasPhoneNumber, phoneNumberIsRequired, pho
           const options = Array.from(field.options);
           //* Clearing a <select> means selecting its own blank option; one that has none — a fixed state
           //* list — has no meaningful cleared state, so keep the current selection over blanking it.
-          const option = nextValue
-            ? options.find((item) => item.value.toLowerCase() === nextValue.toLowerCase()) || options.find((item) => item.text.trim().toLowerCase() === nextValue.toLowerCase())
-            : options.find((item) => item.value === "");
+          const option = nextValue ? options.find((item) => item.value.toLowerCase() === nextValue.toLowerCase()) || options.find((item) => item.text.trim().toLowerCase() === nextValue.toLowerCase()) : options.find((item) => item.value === "");
           if (!option) return;
           field.value = option.value;
         } else {
@@ -671,10 +678,18 @@ const strikerFormHandler = ({ formId, hasPhoneNumber, phoneNumberIsRequired, pho
   const initPhoneInput = async () => {
     try {
       await loadItiAssets();
-      iti = window.intlTelInput(phoneField, {
-        initialCountryLookup: lookupInitialCountry,
-        loadUtils: () => import(ITI_UTILS_SRC),
-      });
+      const optionsObject = { loadUtils: () => import(ITI_UTILS_SRC) };
+      if (forceItiCountry) {
+        //* A caller-pinned country is authoritative, and iti ignores initialCountryLookup whenever
+        //* initialCountry is set — so skip the ipapi round-trip and its loading state entirely, and
+        //* stay off the static intlTelInput.autoCountry that every other form on the page shares.
+        optionsObject.initialCountry = forceItiCountry;
+        //* "OFF" is the only value that hides the selector; separateDialCode still renders the +NN.
+        optionsObject.countrySelectorMode = "OFF";
+      } else {
+        optionsObject.initialCountryLookup = lookupInitialCountry;
+      }
+      iti = window.intlTelInput(phoneField, optionsObject);
     } catch (error) {
       console.error(error);
     }

@@ -80,6 +80,7 @@ strikerFormHandler({
   hasPhoneNumber,          // bool    — form has a [name="phone_number"] input
   phoneNumberIsRequired,   // bool    — empty phone rejects submit
   phoneNumberIsExternal,   // bool    — caller manages the phone field; skip intl-tel-input
+  forceItiCountry,         // string  — ISO2 code ("us", "br"): pin the country, hide the selector
   ghl: {                   // omit entirely to skip GHL submission
     formId,                // string  — GHL form or survey id
     location_id,           // string  — GHL location id
@@ -152,6 +153,9 @@ Two modes:
 
 - Default (`phoneNumberIsExternal` unset): the handler loads intl-tel-input from CDN, mounts it on `[name="phone_number"]`, detects the initial country via `ipapi.co`, validates via `iti.isValidNumber()`, and submits the E.164 number. Invalid numbers show `alert("Field invalid. Please check for typos.")` and block submit.
 - `phoneNumberIsExternal: true` — you own the phone input; the raw `.value` is submitted verbatim and no validation happens here. Use this when a page-level component already renders its own phone widget.
+- `forceItiCountry: "br"` — pin the country instead of geolocating. The country selector is hidden so the visitor can't change it, and the `ipapi.co` lookup is skipped entirely. Case-insensitive: `"br"` and `"BR"` both work. The flag and `+55` prefix still render — they just stop being clickable.
+  - Because the country is locked, a number from anywhere else fails validation and is rejected by the `alert()`. Only use this on forms whose audience really is single-country.
+  - Has no effect when `phoneNumberIsExternal: true` or `hasPhoneNumber` is falsy — intl-tel-input is never mounted in those cases.
 - `phoneNumberIsRequired: false` — empty phone is allowed; a non-empty value must still be valid.
 
 ## Address autofill
@@ -360,5 +364,6 @@ Set `ghl.isSurvey: true` to POST to `backend.leadconnectorhq.com/surveys/submit`
 - reCAPTCHA Enterprise script is injected only when `ghl.formId` is set. The badge is hidden via injected CSS.
 - Multiple calls to `strikerFormHandler` on the same page share one intl-tel-input asset load (memoized on `window.__itiAssetsPromise`), one Google Maps load (`window.__googleMapsPromise`), and one country lookup (`window.__itiCountryPromise`).
 - The `ipapi.co` country lookup is cached in `localStorage` under `sfh_iti_country` for 24h, so repeat visits and multi-step funnels don't re-request it. Failures are never cached.
+- `forceItiCountry` bypasses all of that: a pinned country neither reads nor writes the shared lookup promise or the cache, and never fires the request.
 - Address autofill and phone input both degrade quietly: if the CDN or API is unavailable the field stays a plain text input (still `required`, still named `address`) and the form still submits.
 - Every helper lives inside the `strikerFormHandler` function, so the script adds exactly one name to the page's global scope.
