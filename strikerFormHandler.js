@@ -739,7 +739,15 @@ const strikerFormHandler = ({
   const initPhoneInput = async () => {
     try {
       await loadItiAssets();
-      const optionsObject = { loadUtils: () => import(ITI_UTILS_SRC) };
+      const optionsObject = {
+        loadUtils: () => import(ITI_UTILS_SRC),
+        //* iti's default "POLITE" keeps any placeholder authored in the HTML, which then never matches the
+        //* as-you-type mask or follows a country change. "AGGRESSIVE" always writes iti's example number,
+        //* built in the same format the mask uses.
+        placeholderNumberPolicy: "AGGRESSIVE",
+        //* Same shape as the mask, but every digit zeroed so the example can't be mistaken for a real number.
+        customPlaceholder: (placeholder) => placeholder.replace(/\d/g, "0"),
+      };
       if (forceItiCountry) {
         //* A caller-pinned country is authoritative, and iti ignores initialCountryLookup whenever
         //* initialCountry is set — so skip the ipapi round-trip and its loading state entirely, and

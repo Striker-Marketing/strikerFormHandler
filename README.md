@@ -153,6 +153,7 @@ Two modes:
 ### Phone number
 
 - Default (`phoneNumberIsExternal` unset): the handler loads intl-tel-input from CDN, mounts it on `[name="phone_number"]`, detects the initial country via `ipapi.co`, validates via `iti.isValidNumber()`, and submits the E.164 number. Invalid numbers show `alert("Field invalid. Please check for typos.")` and block submit.
+- The phone input's `placeholder` is always replaced with a zeroed-out example number for the selected country (e.g. `000-000-0000` for the US), formatted the same way the field formats what the visitor types, and it updates when the country changes. Any `placeholder` you author on `[name="phone_number"]` is overwritten; use a `<label>` for field text instead.
 - `phoneNumberIsExternal: true` — you own the phone input; the raw `.value` is submitted verbatim and no validation happens here. Use this when a page-level component already renders its own phone widget.
 - `forceItiCountry: "br"` — pin the country instead of geolocating. The country selector is hidden so the visitor can't change it, and the `ipapi.co` lookup is skipped entirely. Case-insensitive: `"br"` and `"BR"` both work. The flag and `+55` prefix still render — they just stop being clickable.
   - Because the country is locked, a number from anywhere else fails validation and is rejected by the `alert()`. Only use this on forms whose audience really is single-country.
