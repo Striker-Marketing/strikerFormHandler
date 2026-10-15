@@ -4,6 +4,7 @@ const strikerFormHandler = ({
   phoneNumberIsRequired,
   phoneNumberIsExternal,
   forceItiCountry,
+  isWebflow,
   ghl = { formId: undefined, terms_and_conditions: undefined, location_id: undefined, isSurvey: undefined, captchaToken: undefined, updateContactOnly: undefined, fields: undefined, customFields: undefined, hasPath: undefined, hasTaboola: undefined },
   address_autofill = { key: undefined, single_field: undefined, countries: undefined, types: undefined },
   submitFunction = () => {},
@@ -38,6 +39,13 @@ const strikerFormHandler = ({
   const ADDRESS_DEFAULT_TYPES = ["street_address", "subpremise", "premise"];
   //* Ordered fallbacks: the first component type present wins.
   const ADDRESS_CITY_TYPES = ["locality", "postal_town", "sublocality_level_1", "administrative_area_level_3", "administrative_area_level_2"];
+
+  //* Webflow's own form POST; the trailing segment is the site id. /signFile (file uploads) must not match.
+  const WEBFLOW_FORM_ENDPOINT_PATTERN = /\/api\/v1\/form\/[^/]+$/;
+  const WEBFLOW_SUBMIT_TIMEOUT_MS = 20000;
+  //* The jQuery.data key webflow.js keeps each form's state under (handler, redirect, done, fail, btn).
+  const WEBFLOW_DATA_KEY = ".w-form";
+  const WEBFLOW_HIDDEN_ATTR = "data-sfh-wf-hidden";
 
   const GHL_ENDPOINTS = {
     form: "https://backend.leadconnectorhq.com/forms/submit",
@@ -666,6 +674,59 @@ const strikerFormHandler = ({
     return response.json();
   };
 
+  //* Webflow submits the form itself, from a delegated jQuery listener on document that ignores our
+  //* preventDefault. We let it, and only wait for its POST to land so submitFunction cannot abort it.
+  //* Must be called synchronously from the submit listener: Webflow's listener runs right after ours,
+  //* in the same dispatch, and that is when its ajaxSend fires.
+  const waitForWebflow = () => {
+    const $ = window.jQuery;
+    const webflowForm = $?.data(form, WEBFLOW_DATA_KEY);
+    if (!webflowForm?.handler) {
+      console.warn("strikerFormHandler: isWebflow is set but Webflow is not handling this form; not waiting for it.");
+      return Promise.resolve();
+    }
+    //* Read by Webflow only once its POST succeeds, so clearing it here still lands in time — and
+    //* stops Webflow navigating away underneath a GHL request that is still in flight.
+    webflowForm.redirect = null;
+
+    return new Promise((resolve, reject) => {
+      let sent = false;
+      const isWebflowRequest = (settings) => WEBFLOW_FORM_ENDPOINT_PATTERN.test(settings?.url || "");
+      const onSend = (_event, _xhr, settings) => {
+        if (isWebflowRequest(settings)) sent = true;
+      };
+      const onComplete = (_event, xhr, settings) => {
+        if (!isWebflowRequest(settings)) return;
+        cleanup();
+        //* jQuery runs Webflow's .done() before it triggers ajaxComplete, so this lands in the same task
+        //* as Webflow hiding the form: it never visibly disappears.
+        form.style.display = "";
+        //* Webflow has just reset the button (label back, re-enabled), but GHL may still be running.
+        setSubmitLoading();
+        //* Same success test webflow.js uses.
+        if (xhr.responseJSON?.code === 200) resolve();
+        else reject(new Error("Webflow submission failed"));
+      };
+      const timeout = setTimeout(() => {
+        cleanup();
+        webflowForm.fail?.show();
+        reject(new Error("Webflow submission timed out"));
+      }, WEBFLOW_SUBMIT_TIMEOUT_MS);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        $(document).off("ajaxSend", onSend).off("ajaxComplete", onComplete);
+      };
+      $(document).on("ajaxSend", onSend).on("ajaxComplete", onComplete);
+      //* By the next task the dispatch is over. No POST by then means Webflow refused the submit — its own
+      //* validation alert(), an unsolved captcha — and nothing will ever complete.
+      setTimeout(() => {
+        if (sent) return;
+        cleanup();
+        reject(new Error("Webflow did not submit the form"));
+      }, 0);
+    });
+  };
+
   const form = document.getElementById(formId);
   const submitBtn = form.querySelector("[type='submit']");
   const urlParams = new URLSearchParams(window.location.search);
@@ -715,6 +776,18 @@ const strikerFormHandler = ({
     return iti.isValidNumber();
   };
 
+  if (isWebflow) {
+    //* A stylesheet !important beats the inline display jQuery's .toggle() writes, so Webflow's success
+    //* block can never show. .w-form-fail is left alone: it is Webflow's error UI and still useful.
+    if (!window.__sfhWebflowStylesInjected) {
+      window.__sfhWebflowStylesInjected = true;
+      const style = document.createElement("style");
+      style.textContent = `[${WEBFLOW_HIDDEN_ATTR}]{display:none!important}`;
+      document.head.appendChild(style);
+    }
+    form.closest(".w-form")?.querySelector(":scope > .w-form-done")?.setAttribute(WEBFLOW_HIDDEN_ATTR, "");
+  }
+
   const urlParamEntries = Object.fromEntries(urlParams.entries());
   Object.keys(urlParamEntries).forEach((paramName) => {
     const input = document.createElement("input");
@@ -725,27 +798,47 @@ const strikerFormHandler = ({
     form.appendChild(input);
   });
 
-  const originalSubmitLabel = submitBtn.innerHTML;
+  //* <input type="submit"> — Webflow's default button — has no innerHTML to put a spinner in.
+  const submitIsInput = submitBtn.tagName === "INPUT";
+  const originalSubmitLabel = submitIsInput ? submitBtn.value : submitBtn.innerHTML;
+
+  const setSubmitLoading = () => {
+    submitBtn.setAttribute("disabled", "disabled");
+    if (submitIsInput) submitBtn.value = submitBtn.dataset.wait || "Please wait...";
+    else submitBtn.innerHTML = buildSpinnerSvg(24, "margin:auto;");
+  };
+
+  const resetSubmitButton = () => {
+    submitBtn.removeAttribute("disabled");
+    if (submitIsInput) submitBtn.value = originalSubmitLabel;
+    else submitBtn.innerHTML = originalSubmitLabel;
+  };
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!isPhoneValid()) {
+      //* Keeps Webflow's document-level listener from submitting a lead we are rejecting.
+      if (isWebflow) event.stopPropagation();
       alert("Field invalid. Please check for typos.");
       return;
     }
-    submitBtn.innerHTML = buildSpinnerSvg(24, "margin:auto;");
-    submitBtn.setAttribute("disabled", "disabled");
+    //* Webflow reads an <input>'s value as the label to restore later, so touching it before Webflow's
+    //* listener runs would make it "restore" our loading text. Its own data-wait covers that window.
+    if (!(isWebflow && submitIsInput)) setSubmitLoading();
+    //* Still synchronous, so Webflow — which serialises the form after this listener returns — gets the
+    //* normalised number too.
     if (hasPhoneNumber && iti && phoneField.value.trim() !== "") {
       phoneField.value = iti.getNumber();
     }
+    const webflowSubmitted = isWebflow ? waitForWebflow() : Promise.resolve();
     try {
-      let ghlResponse;
-      if (ghl.formId) ghlResponse = await submitGhl();
+      const [, ghlResponse] = await Promise.all([webflowSubmitted, ghl.formId ? submitGhl() : undefined]);
       window.dataLayer = window.dataLayer || [];
       window.dataLayer.push({ event: "form-submitted" });
       window.dataLayer.push({ event: "form_submitted" });
       submitFunction({ ghlResponse });
     } catch (error) {
-      submitBtn.innerHTML = originalSubmitLabel;
+      resetSubmitButton();
       console.error(error);
     }
   });

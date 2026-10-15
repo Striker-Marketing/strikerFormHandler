@@ -81,6 +81,7 @@ strikerFormHandler({
   phoneNumberIsRequired,   // bool    — empty phone rejects submit
   phoneNumberIsExternal,   // bool    — caller manages the phone field; skip intl-tel-input
   forceItiCountry,         // string  — ISO2 code ("us", "br"): pin the country, hide the selector
+  isWebflow,               // bool    — form is a Webflow form; let Webflow submit too and wait for it (see "Webflow")
   ghl: {                   // omit entirely to skip GHL submission
     formId,                // string  — GHL form or survey id
     location_id,           // string  — GHL location id
@@ -286,7 +287,8 @@ One completed pick bills as a single *Autocomplete session* at the **Essentials*
     page:       { url: location.href, title: document.title },
   }
   ```
-- Submit button shows an inline SVG spinner while the request is in flight, and is re-enabled with its original inner HTML if the submit fails.
+- Submit button shows an inline SVG spinner while the request is in flight (an `<input type="submit">` shows its `data-wait` text instead), and is re-enabled with its original label if the submit fails.
+- With `isWebflow`: one shared `<style>` hiding Webflow's `.w-form-done` (marked with `data-sfh-wf-hidden`).
 
 ## Full example — GHL form with custom + file + group fields
 
@@ -353,6 +355,20 @@ Omit the `ghl` object entirely. The handler still:
 - Calls `submitFunction({ ghlResponse: undefined })` on success
 
 In that mode, do your own POST inside `submitFunction`, or let the browser submit natively by not calling `strikerFormHandler` at all.
+
+## Webflow
+
+Set `isWebflow: true` on a form built with Webflow's native Form Block. Webflow then still records the submission as usual, in parallel with GHL:
+
+- Webflow's own submit is **not** blocked. Webflow ignores `preventDefault()` anyway, so the handler lets it POST and waits for Webflow's response (`code: 200`). `dataLayer` events and `submitFunction` run only after **both** Webflow and GHL succeed, so a redirect can never cut Webflow's request short.
+- If Webflow fails or doesn't answer within 20s, the button is re-enabled and `submitFunction` isn't called. Webflow's `.w-form-fail` block is shown. Resubmitting sends to both again.
+- If Webflow refuses to submit (its own validation alert, an unsolved captcha), the submit fails and `submitFunction` isn't called. GHL is sent at the same time as Webflow, though, so in that case GHL may still receive the lead.
+- An invalid phone number blocks Webflow's submit too, not just GHL.
+- Webflow's success block (`.w-form-done`) never shows, and the form is never hidden.
+- Leave the form's **Redirect URL empty** in Webflow and redirect in `submitFunction` instead. Any `data-redirect` is ignored, so it can't race the GHL request.
+- The submit button is never disabled ahead of time, so browser autofill keeps working. While the submit is in flight, a `<button>` shows the spinner and an `<input type="submit">` shows its **Waiting text** (`data-wait`), or `"Please wait..."`. The button stays in that state until both requests finish.
+
+If the page has no jQuery, or Webflow isn't handling that form (no `data-wf-site`, the form has its own `action`), the handler logs a warning and carries on without waiting for Webflow.
 
 ## Surveys
 
