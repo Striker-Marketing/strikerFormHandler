@@ -19,7 +19,7 @@ Single-file vanilla JS module (`strikerFormHandler.js`) — no `package.json`, n
 ## GHL submission model
 
 - Endpoint switches on `ghl.isSurvey`: forms → `backend.leadconnectorhq.com/forms/submit`, surveys → `.../surveys/submit`.
-- `GHL_STANDARD_FIELDS` (`strikerFormHandler.js:21`) are looked up by `name` attribute directly. Anything else must be declared via `ghl.customFields`.
+- `GHL_STANDARD_FIELDS` (`strikerFormHandler.js:21`) are looked up by `name` attribute directly. `GHL_FIELD_ALIASES` lists alternate names for a standard field — `name` is treated exactly like `full_name` (in both `ghl.fields` and the input's `name` attribute) and submitted as `full_name`. Anything else must be declared via `ghl.customFields`.
 - `ghl.customFields` is an array of `[fieldName, fieldId, marker]` tuples (`applyCustomField` at `strikerFormHandler.js:365`):
   - `fieldName` — the `name` attribute on the input.
   - `fieldId` — the GHL custom field id the value is submitted under.

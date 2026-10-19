@@ -53,6 +53,8 @@ const strikerFormHandler = ({
   };
 
   const GHL_STANDARD_FIELDS = ["full_name", "first_name", "last_name", "email", "address", "country", "city", "state", "postal_code", "organization", "website"];
+  // Alternate input names (and ghl.fields entries) accepted for a standard field.
+  const GHL_FIELD_ALIASES = { full_name: ["name"] };
 
   const GHL_DEFAULT_TERMS = "I agree to terms & conditions provided by the company. By providing my phone number, I agree to receive text messages from the business.";
   const GHL_ALLOWED_FILE_EXTS = ["doc", "docx", "txt", "pdf", "jpg", "jpeg", "png"];
@@ -618,8 +620,9 @@ const strikerFormHandler = ({
     if (ghl.updateContactOnly) body.updateContactOnly = true;
 
     GHL_STANDARD_FIELDS.forEach((name) => {
-      if (!fields.includes(name)) return;
-      body[name] = form.querySelector(`[name='${name}']`)?.value || "";
+      const names = [name, ...(GHL_FIELD_ALIASES[name] || [])];
+      if (!names.some((n) => fields.includes(n))) return;
+      body[name] = form.querySelector(names.map((n) => `[name='${n}']`).join(","))?.value || "";
     });
 
     if (fields.includes("terms_and_conditions")) {
