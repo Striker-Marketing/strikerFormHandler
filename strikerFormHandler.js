@@ -842,8 +842,8 @@ const strikerFormHandler = ({
     try {
       const [, ghlResponse] = await Promise.all([webflowSubmitted, ghl.formId ? submitGhl() : undefined]);
       window.dataLayer = window.dataLayer || [];
-      window.dataLayer.push({ event: "form-submitted" });
-      window.dataLayer.push({ event: "form_submitted" });
+      if (ghlResponse && window.umami) await window.umami.identify({ id: ghlResponse.contactId });
+      if (window.triggerStrikerLead) triggerStrikerLead(form);
       submitFunction({ ghlResponse });
     } catch (error) {
       resetSubmitButton();
