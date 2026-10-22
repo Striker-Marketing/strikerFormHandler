@@ -17,7 +17,7 @@ No build step. No dependencies to install. Drop the script on the page, call `st
 Load the minified build from jsDelivr and invoke `strikerFormHandler(...)` once the DOM is ready:
 
 ```html
-<script src="https://cdn.jsdelivr.net/gh/Striker-Marketing/strikerFormHandler@1/strikerFormHandler.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/gh/Striker-Marketing/strikerFormHandler@2/strikerFormHandler.min.js"></script>
 <script>
   document.addEventListener("DOMContentLoaded", () => {
     strikerFormHandler({
