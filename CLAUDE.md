@@ -2,17 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Writing style
+
+Write all answers and plans in ASD-STE100 (Simplified Technical English).
+
 ## Repository shape
 
 Single-file vanilla JS module (`strikerFormHandler.js`) — no `package.json`, no build step, no tests, no linter. **Everything lives inside the `strikerFormHandler` arrow function**: it is the only top-level declaration in the file, so dropping the script on a page leaks nothing else into global scope. Add new constants and helpers inside it, not above it. Meant to be loaded directly via `<script>` tag on a marketing site (typically a static/WordPress page) and invoked with `strikerFormHandler({ ... })` on `DOMContentLoaded`. All external deps (`intl-tel-input`, `grecaptcha` enterprise, Google Maps JS) are lazy-loaded from CDNs at runtime.
 
 ## Entry point
 
-`strikerFormHandler({ formId, hasPhoneNumber, phoneNumberIsRequired, phoneNumberIsExternal, ghl, address_autofill, submitFunction })` at `strikerFormHandler.js:1`. Constants come first, then helpers, then the executable body starting at `const form = document.getElementById(formId)`. Helpers close over `form`, `urlParams`, `ghl`, `iti`, `address_autofill`, and `addressField` rather than taking them as arguments.
+`strikerFormHandler({ formId, hasPhoneNumber, phoneNumberIsRequired, phoneNumberIsExternal, clientBackupId, ghl, address_autofill, submitFunction })` at `strikerFormHandler.js:1`. Constants come first, then helpers, then the executable body starting at `const form = document.getElementById(formId)`. Helpers close over `form`, `urlParams`, `ghl`, `iti`, `address_autofill`, and `addressField` rather than taking them as arguments.
 
 - `formId`: DOM id of the `<form>` element.
 - `hasPhoneNumber` + `phoneNumberIsExternal`: if the form has a phone field, the handler wires it to intl-tel-input **unless** `phoneNumberIsExternal` is true (in which case the caller manages the phone field themselves and the value is read as-is).
 - `ghl`: optional GoHighLevel integration config. If `ghl.formId` is set, the handler injects the Google reCAPTCHA Enterprise script and POSTs to GHL on submit.
+- `clientBackupId`: optional Striker client uuid. When it is set, each submit also sends a backup of the lead (see "Lead backup").
 - `address_autofill`: optional Google Places address autocomplete on the `[name='address']` input. Inert unless `address_autofill.key` is set.
 - `submitFunction({ ghlResponse })`: callback invoked after a successful submit (after any GHL POST and after `dataLayer` events are pushed). Use this for redirects, thank-you messages, etc.
 
@@ -72,6 +77,14 @@ Single-file vanilla JS module (`strikerFormHandler.js`) — no `package.json`, n
 - **"Powered by Google" is mandatory now.** The old widget rendered its own attribution; a hand-rolled prediction list must display it (Maps JS policies). It is the last `<li>` in every open dropdown, from the gstatic assets in `ADDRESS_ATTRIBUTION_LIGHT`/`_DARK`. Do not remove it.
 - Keyboard and ARIA are ours to maintain: the input carries `role="combobox"`/`aria-autocomplete`/`aria-expanded`/`aria-controls`/`aria-activedescendant`, the list is a `listbox` of `option`s. Enter on a highlighted suggestion **must** `preventDefault()`, or it submits the form. Closing on blur is deferred ~200ms and a `mousedown` handler on the list calls `preventDefault()` — on touch the tap blurs the input before the click lands, and without both the option would be gone by then.
 - `initPlaces` is one `try/catch` around both the Maps load and the wiring. It runs fire-and-forget, so an uncaught failure would surface as an unhandled rejection; instead any failure (bad key, blocked API, offline) logs and leaves the plain, still-`required` input exactly as the page authored it, with the form fully usable.
+
+## Lead backup (`clientBackupId`)
+
+- When `clientBackupId` is set, `sendLeadBackup()` POSTs `{ client_id, path, data, idempotency_key }` as JSON to `LEAD_BACKUP_ENDPOINT` (`back.striker.marketing/leads/ingest`). The API has no auth and allows CORS `*`. Do not send a date; the API ignores it.
+- It is called from the submit listener after the phone check and the E.164 change, and before `waitForWebflow()`. It runs at the same time as GHL and Webflow. **Never `await` it and never put it in the `Promise.all`.** The backup must not depend on GHL success, because it exists to keep the leads GHL loses. A backup failure must not block `submitFunction` or reset the button; it only logs.
+- `keepalive: true` is required, so a redirect in `submitFunction` cannot cancel the request.
+- `collectBackupData()` reads `new FormData(form)`: `File` values are skipped, and repeated names become arrays. It includes the hidden URL param inputs.
+- `idempotency_key` is a new `crypto.randomUUID()` for each submit attempt.
 
 ## Webflow mode (`isWebflow`)
 

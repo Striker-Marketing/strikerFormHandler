@@ -82,6 +82,7 @@ strikerFormHandler({
   phoneNumberIsExternal,   // bool    — caller manages the phone field; skip intl-tel-input
   forceItiCountry,         // string  — ISO2 code ("us", "br"): pin the country, hide the selector
   isWebflow,               // bool    — form is a Webflow form; let Webflow submit too and wait for it (see "Webflow")
+  clientBackupId,          // string  — Striker client uuid; send a backup of each lead (see "Lead backup")
   ghl: {                   // omit entirely to skip GHL submission
     formId,                // string  — GHL form or survey id
     location_id,           // string  — GHL location id
@@ -370,6 +371,16 @@ Set `isWebflow: true` on a form built with Webflow's native Form Block. Webflow 
 - The submit button is never disabled ahead of time, so browser autofill keeps working. While the submit is in flight, a `<button>` shows the spinner and an `<input type="submit">` shows its **Waiting text** (`data-wait`), or `"Please wait..."`. The button stays in that state until both requests finish.
 
 If the page has no jQuery, or Webflow isn't handling that form (no `data-wf-site`, the form has its own `action`), the handler logs a warning and carries on without waiting for Webflow.
+
+## Lead backup
+
+Set `clientBackupId` to the client uuid (the id in `GET /clients`, the same uuid as in the client page URL of the dashboard). On each submit, the handler then sends a copy of the lead to `POST https://back.striker.marketing/leads/ingest`. The CRM stays the primary copy.
+
+- The body is `{ client_id, path, data, idempotency_key }`. `path` is `window.location.pathname`. `idempotency_key` is a new uuid for each submit.
+- `data` holds all form fields, including the hidden URL param inputs. File inputs are not sent. A name that occurs more than one time (a checkbox group) is sent as an array. The phone is sent in E.164 format.
+- The backup is sent at the same time as GHL and Webflow. It does not wait for them, so the lead is kept when GHL fails.
+- The submit never waits for the backup. A failed backup only writes to the console. `keepalive` lets the request finish after a redirect in `submitFunction`.
+- It does not need `ghl`.
 
 ## Surveys
 

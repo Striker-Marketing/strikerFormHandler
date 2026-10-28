@@ -5,6 +5,7 @@ const strikerFormHandler = ({
   phoneNumberIsExternal,
   forceItiCountry,
   isWebflow,
+  clientBackupId,
   ghl = { formId: undefined, terms_and_conditions: undefined, location_id: undefined, isSurvey: undefined, captchaToken: undefined, updateContactOnly: undefined, fields: undefined, customFields: undefined, hasPath: undefined, hasTaboola: undefined },
   address_autofill = { key: undefined, single_field: undefined, countries: undefined, types: undefined },
   submitFunction = () => {},
@@ -46,6 +47,8 @@ const strikerFormHandler = ({
   //* The jQuery.data key webflow.js keeps each form's state under (handler, redirect, done, fail, btn).
   const WEBFLOW_DATA_KEY = ".w-form";
   const WEBFLOW_HIDDEN_ATTR = "data-sfh-wf-hidden";
+
+  const LEAD_BACKUP_ENDPOINT = "https://back.striker.marketing/leads/ingest";
 
   const GHL_ENDPOINTS = {
     form: "https://backend.leadconnectorhq.com/forms/submit",
@@ -674,6 +677,36 @@ const strikerFormHandler = ({
     return response.json();
   };
 
+  const collectBackupData = () => {
+    const data = {};
+    for (const [name, value] of new FormData(form)) {
+      if (value instanceof File) continue;
+      if (!(name in data)) data[name] = value;
+      else data[name] = [].concat(data[name], value);
+    }
+    return data;
+  };
+
+  //* Fire and forget: the backup must never block or fail the real submit, and it is sent alongside
+  //* GHL rather than after it, so it still keeps the leads GHL loses. keepalive lets it outlive a
+  //* redirect in submitFunction.
+  const sendLeadBackup = () => {
+    try {
+      fetch(LEAD_BACKUP_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        keepalive: true,
+        body: JSON.stringify({ client_id: clientBackupId, path: window.location.pathname, data: collectBackupData(), idempotency_key: crypto.randomUUID() }),
+      })
+        .then((response) => {
+          if (!response.ok) console.error(`strikerFormHandler: lead backup failed (${response.status})`);
+        })
+        .catch((error) => console.error("strikerFormHandler: lead backup failed", error));
+    } catch (error) {
+      console.error("strikerFormHandler: lead backup failed", error);
+    }
+  };
+
   //* Webflow submits the form itself, from a delegated jQuery listener on document that ignores our
   //* preventDefault. We let it, and only wait for its POST to land so submitFunction cannot abort it.
   //* Must be called synchronously from the submit listener: Webflow's listener runs right after ours,
@@ -838,6 +871,7 @@ const strikerFormHandler = ({
     if (hasPhoneNumber && iti && phoneField.value.trim() !== "") {
       phoneField.value = iti.getNumber();
     }
+    if (clientBackupId) sendLeadBackup();
     const webflowSubmitted = isWebflow ? waitForWebflow() : Promise.resolve();
     try {
       const [, ghlResponse] = await Promise.all([webflowSubmitted, ghl.formId ? submitGhl() : undefined]);
