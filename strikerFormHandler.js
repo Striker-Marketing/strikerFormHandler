@@ -643,6 +643,32 @@ const strikerFormHandler = ({
     return body;
   };
 
+  //* GHL answers a rejected submit with a JSON body whose shape varies — `message` as a string, or an array of
+  //* validation messages, sometimes only `error`. Anything unreadable falls back to a generic message.
+  const readGhlErrorMessage = async (response) => {
+    const fallback = `Submission failed (${response.status}). Please try again.`;
+    let text;
+    try {
+      text = await response.text();
+    } catch {
+      return fallback;
+    }
+    try {
+      const data = JSON.parse(text);
+      const message = [data?.message, data?.error, data?.msg].find((value) => (Array.isArray(value) ? value.length : value));
+      if (Array.isArray(message)) return message.join("\n");
+      if (typeof message === "string") return message;
+    } catch {
+      if (text && text.length <= 300 && !/<[a-z!]/i.test(text)) return text.trim();
+    }
+    return fallback;
+  };
+
+  const failGhl = (message) => {
+    alert(message);
+    throw new Error(`GHL: ${message}`);
+  };
+
   const submitGhl = async () => {
     const formData = new FormData();
     const body = buildGhlBody();
@@ -656,13 +682,18 @@ const strikerFormHandler = ({
     try {
       token = await grecaptcha.enterprise.execute(ghl.captchaToken, { action: "submit" });
     } catch {
-      return Promise.reject("GHL captcha failed");
+      failGhl("Submission failed. Please try again.");
     }
     formData.append("captchaV3", token);
 
     const endpoint = ghl.isSurvey ? GHL_ENDPOINTS.survey : GHL_ENDPOINTS.form;
-    const response = await fetch(endpoint, { method: "POST", body: formData });
-    if (!response.ok) return Promise.reject("GHL response was not ok");
+    let response;
+    try {
+      response = await fetch(endpoint, { method: "POST", body: formData });
+    } catch {
+      failGhl("Submission failed. Please check your connection and try again.");
+    }
+    if (!response.ok) failGhl(await readGhlErrorMessage(response));
     return response.json();
   };
 

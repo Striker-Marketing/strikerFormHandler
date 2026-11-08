@@ -27,6 +27,7 @@ Single-file vanilla JS module (`strikerFormHandler.js`) — no `package.json`, n
   - `type="file"` inputs are appended to `FormData` directly and validated against `GHL_ALLOWED_FILE_EXTS`. All other values go into the `body` object that is JSON-stringified into `formData.formData`.
 - Radio groups are read via `[name]:checked`.
 - `terms_and_conditions` has two modes: if included in `ghl.fields`, values come from checked `[name='terms_and_conditions']` inputs; otherwise `ghl.terms_and_conditions` (or `GHL_DEFAULT_TERMS`) is submitted as a fixed string.
+- A failed GHL submit `alert()`s the visitor via `failGhl()`. For a non-OK response, the text comes from the GHL body (`readGhlErrorMessage`: `message`, which can be an array, then `error`, then `msg`, then short plain text, then a generic message with the status). Captcha and network failures show a generic message.
 - reCAPTCHA v3 token is fetched via `grecaptcha.enterprise.execute(ghl.captchaToken, { action: "submit" })` and appended as `captchaV3`.
 
 ## Tracking behavior
