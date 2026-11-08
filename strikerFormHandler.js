@@ -777,6 +777,7 @@ const strikerFormHandler = ({
       submitFunction({ ghlResponse });
     } catch (error) {
       submitBtn.innerHTML = originalSubmitLabel;
+      submitBtn.removeAttribute("disabled");
       console.error(error);
     }
   });
